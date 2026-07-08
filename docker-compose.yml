@@ -32,8 +32,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      dind:
-        condition: service_started
     env_file:
       - .env
     environment:
@@ -44,15 +42,17 @@ services:
       DB_DATABASE: ${DB_DATABASE:-amnezia_panel}
       DB_USERNAME: ${DB_USERNAME:-amnezia}
       DB_PASSWORD: ${DB_PASSWORD:-amnezia}
-      DOCKER_HOST: tcp://dind:2375
     volumes:
       - ./:/var/www/html
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8082:80"
 
   dind:
     image: docker:24-dind
     container_name: amnezia-panel-dind
+    profiles:
+      - dind
     privileged: true
     restart: unless-stopped
     environment:
