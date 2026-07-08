@@ -42,7 +42,7 @@ Web-based management panel for Amnezia AWG (WireGuard) VPN servers.
 ## Installation
 
 ```bash
-git clone https://github.com/infosave2007/amneziavpnphp.git
+git clone https://github.com/iKREISHI/amneziavpnphp.git
 cd amneziavpnphp
 cp .env.example .env
 
