@@ -30,6 +30,15 @@ require_once __DIR__ . '/../inc/BackupLibrary.php';
 require_once __DIR__ . '/../inc/InstallProtocolManager.php';
 require_once __DIR__ . '/../inc/ProtocolService.php';
 require_once __DIR__ . '/../inc/OpenRouterService.php';
+require_once __DIR__ . '/../inc/RoutingProfile.php';
+require_once __DIR__ . '/../inc/RoutingRule.php';
+require_once __DIR__ . '/../inc/RoutingIpSource.php';
+require_once __DIR__ . '/../inc/RoutingManualIp.php';
+require_once __DIR__ . '/../inc/RoutingApplyHistory.php';
+require_once __DIR__ . '/../inc/RoutingUpstream.php';
+require_once __DIR__ . '/../inc/RoutingScriptBuilder.php';
+require_once __DIR__ . '/../inc/RoutingService.php';
+require_once __DIR__ . '/../inc/RoutingDiagnostics.php';
 
 // Load environment configuration
 Config::load(__DIR__ . '/../.env');
@@ -175,6 +184,72 @@ function requireApiAuth(): ?array
     }
 
     return $user;
+}
+
+function routingCsrfToken(): string
+{
+    if (empty($_SESSION['routing_csrf_token'])) {
+        $_SESSION['routing_csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['routing_csrf_token'];
+}
+
+function requireRoutingCsrf(): void
+{
+    $token = $_POST['csrf_token'] ?? '';
+    if (!$token || !hash_equals($_SESSION['routing_csrf_token'] ?? '', $token)) {
+        http_response_code(419);
+        echo 'CSRF token mismatch';
+        exit;
+    }
+}
+
+function requireServerAccess(int $serverId, ?array $user = null): array
+{
+    $user = $user ?: Auth::user();
+    $server = new VpnServer($serverId);
+    $serverData = $server->getData();
+    if (!$serverData || (($serverData['user_id'] ?? null) != ($user['id'] ?? null) && !Auth::isAdmin() && (($user['role'] ?? '') !== 'admin'))) {
+        http_response_code(403);
+        echo 'Forbidden';
+        exit;
+    }
+    return [$server, $serverData];
+}
+
+function requireApiServerAccess(int $serverId, array $user): array
+{
+    try {
+        $server = new VpnServer($serverId);
+        $serverData = $server->getData();
+    } catch (Throwable $e) {
+        http_response_code(404);
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'Server not found']);
+        exit;
+    }
+    if (!$serverData || (($serverData['user_id'] ?? null) != ($user['id'] ?? null) && (($user['role'] ?? '') !== 'admin'))) {
+        http_response_code(403);
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'Forbidden']);
+        exit;
+    }
+    return [$server, $serverData];
+}
+
+function routingJsonInput(): array
+{
+    $raw = file_get_contents('php://input');
+    $data = $raw ? json_decode($raw, true) : [];
+    return is_array($data) ? $data : [];
+}
+
+function routingRedirect(int $serverId, string $path, ?string $message = null, bool $error = false): void
+{
+    if ($message !== null) {
+        $_SESSION[$error ? 'routing_error' : 'routing_success'] = $message;
+    }
+    redirect('/servers/' . $serverId . '/routing' . $path);
 }
 
 /**
@@ -947,6 +1022,405 @@ Router::get('/servers/{id}', function ($params) {
     }
 });
 
+
+/**
+ * SPLIT ROUTING ROUTES
+ */
+
+$routingRender = function (int $serverId, string $template, array $vars = []) {
+    requireAuth();
+    [$server, $serverData] = requireServerAccess($serverId);
+    $service = new RoutingService();
+    $context = $service->contextForServer($serverId);
+    $flash = [
+        'success' => $_SESSION['routing_success'] ?? null,
+        'error' => $_SESSION['routing_error'] ?? null,
+    ];
+    unset($_SESSION['routing_success'], $_SESSION['routing_error']);
+    View::render($template, array_merge($context, $vars, [
+        'server' => $serverData,
+        'csrf_token' => routingCsrfToken(),
+        'flash' => $flash,
+    ]));
+};
+
+$routingRequireProfile = function (int $serverId): array {
+    [$server, $serverData] = requireServerAccess($serverId);
+    $profile = RoutingProfile::getOrCreateForServer($serverId);
+    return [$server, $serverData, $profile];
+};
+
+Router::get('/servers/{id}/routing', function ($params) use ($routingRender) {
+    $routingRender((int) $params['id'], 'routing/index.twig');
+});
+
+Router::get('/servers/{id}/routing/upstream', function ($params) use ($routingRender) {
+    $routingRender((int) $params['id'], 'routing/upstream.twig');
+});
+
+Router::post('/servers/{id}/routing/upstream/import', function ($params) use ($routingRequireProfile) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id'];
+    try {
+        $config = (string) ($_POST['config_content'] ?? '');
+        if (isset($_FILES['config_file']) && $_FILES['config_file']['error'] === UPLOAD_ERR_OK) {
+            $config = file_get_contents($_FILES['config_file']['tmp_name']) ?: $config;
+        }
+        (new RoutingService())->importUpstream($serverId, $config, trim((string) ($_POST['name'] ?? 'niderland')) ?: 'niderland');
+        routingRedirect($serverId, '/upstream', 'Upstream config saved');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/upstream', $e->getMessage(), true);
+    }
+});
+
+Router::post('/servers/{id}/routing/upstream/apply', function ($params) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; requireServerAccess($serverId);
+    try {
+        (new RoutingService())->applyUpstream($serverId, (int) (Auth::user()['id'] ?? 0));
+        routingRedirect($serverId, '/upstream', 'Upstream applied');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/upstream', $e->getMessage(), true);
+    }
+});
+
+Router::post('/servers/{id}/routing/upstream/test', function ($params) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; requireServerAccess($serverId);
+    try {
+        $result = (new RoutingService())->testUpstream($serverId, (int) (Auth::user()['id'] ?? 0));
+        $_SESSION['routing_result'] = $result;
+        routingRedirect($serverId, '/upstream', 'Upstream test finished');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/upstream', $e->getMessage(), true);
+    }
+});
+
+Router::post('/servers/{id}/routing/upstream/delete', function ($params) use ($routingRequireProfile) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id'];
+    try {
+        [, , $profile] = $routingRequireProfile($serverId);
+        RoutingUpstream::deleteActive((int) $profile['id']);
+        routingRedirect($serverId, '/upstream', 'Upstream disabled');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/upstream', $e->getMessage(), true);
+    }
+});
+
+Router::get('/servers/{id}/routing/rules', function ($params) use ($routingRender) {
+    $routingRender((int) $params['id'], 'routing/rules.twig');
+});
+
+Router::post('/servers/{id}/routing/rules/create', function ($params) use ($routingRequireProfile) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id'];
+    try {
+        [, , $profile] = $routingRequireProfile($serverId);
+        RoutingRule::create((int) $profile['id'], $_POST);
+        routingRedirect($serverId, '/rules', 'Rule created');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/rules', $e->getMessage(), true);
+    }
+});
+
+Router::post('/servers/{id}/routing/rules/{rule_id}/update', function ($params) use ($routingRequireProfile) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; $ruleId = (int) $params['rule_id'];
+    try {
+        [, , $profile] = $routingRequireProfile($serverId);
+        $rule = RoutingRule::find($ruleId);
+        if (!$rule || (int) $rule['profile_id'] !== (int) $profile['id']) throw new Exception('Rule not found');
+        RoutingRule::update($ruleId, $_POST);
+        routingRedirect($serverId, '/rules', 'Rule updated');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/rules', $e->getMessage(), true);
+    }
+});
+
+Router::post('/servers/{id}/routing/rules/{rule_id}/delete', function ($params) use ($routingRequireProfile) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; $ruleId = (int) $params['rule_id'];
+    try {
+        [, , $profile] = $routingRequireProfile($serverId);
+        $rule = RoutingRule::find($ruleId);
+        if (!$rule || (int) $rule['profile_id'] !== (int) $profile['id']) throw new Exception('Rule not found');
+        RoutingRule::delete($ruleId);
+        routingRedirect($serverId, '/rules', 'Rule deleted');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/rules', $e->getMessage(), true);
+    }
+});
+
+Router::get('/servers/{id}/routing/sources', function ($params) use ($routingRender) {
+    $routingRender((int) $params['id'], 'routing/sources.twig');
+});
+
+Router::post('/servers/{id}/routing/sources/create', function ($params) use ($routingRequireProfile) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id'];
+    try {
+        [, , $profile] = $routingRequireProfile($serverId);
+        RoutingIpSource::create((int) $profile['id'], $_POST);
+        routingRedirect($serverId, '/sources', 'IP source created');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/sources', $e->getMessage(), true);
+    }
+});
+
+Router::post('/servers/{id}/routing/sources/{source_id}/update', function ($params) use ($routingRequireProfile) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; $sourceId = (int) $params['source_id'];
+    try {
+        [, , $profile] = $routingRequireProfile($serverId);
+        $source = array_values(array_filter(RoutingIpSource::listByProfile((int) $profile['id']), fn($s) => (int) $s['id'] === $sourceId))[0] ?? null;
+        if (!$source) throw new Exception('Source not found');
+        RoutingIpSource::update($sourceId, $_POST);
+        routingRedirect($serverId, '/sources', 'IP source updated');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/sources', $e->getMessage(), true);
+    }
+});
+
+Router::post('/servers/{id}/routing/sources/{source_id}/delete', function ($params) use ($routingRequireProfile) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; $sourceId = (int) $params['source_id'];
+    try {
+        [, , $profile] = $routingRequireProfile($serverId);
+        $source = array_values(array_filter(RoutingIpSource::listByProfile((int) $profile['id']), fn($s) => (int) $s['id'] === $sourceId))[0] ?? null;
+        if (!$source) throw new Exception('Source not found');
+        RoutingIpSource::delete($sourceId);
+        routingRedirect($serverId, '/sources', 'IP source deleted');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/sources', $e->getMessage(), true);
+    }
+});
+
+Router::get('/servers/{id}/routing/manual-ips', function ($params) use ($routingRender) {
+    $routingRender((int) $params['id'], 'routing/manual_ips.twig');
+});
+
+Router::post('/servers/{id}/routing/manual-ips/create', function ($params) use ($routingRequireProfile) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id'];
+    try {
+        [, , $profile] = $routingRequireProfile($serverId);
+        RoutingManualIp::create((int) $profile['id'], $_POST);
+        routingRedirect($serverId, '/manual-ips', 'Manual IP created');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/manual-ips', $e->getMessage(), true);
+    }
+});
+
+Router::post('/servers/{id}/routing/manual-ips/{manual_ip_id}/update', function ($params) use ($routingRequireProfile) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; $ipId = (int) $params['manual_ip_id'];
+    try {
+        [, , $profile] = $routingRequireProfile($serverId);
+        $row = array_values(array_filter(RoutingManualIp::listByProfile((int) $profile['id']), fn($s) => (int) $s['id'] === $ipId))[0] ?? null;
+        if (!$row) throw new Exception('Manual IP not found');
+        RoutingManualIp::update($ipId, $_POST);
+        routingRedirect($serverId, '/manual-ips', 'Manual IP updated');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/manual-ips', $e->getMessage(), true);
+    }
+});
+
+Router::post('/servers/{id}/routing/manual-ips/{manual_ip_id}/delete', function ($params) use ($routingRequireProfile) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; $ipId = (int) $params['manual_ip_id'];
+    try {
+        [, , $profile] = $routingRequireProfile($serverId);
+        $row = array_values(array_filter(RoutingManualIp::listByProfile((int) $profile['id']), fn($s) => (int) $s['id'] === $ipId))[0] ?? null;
+        if (!$row) throw new Exception('Manual IP not found');
+        RoutingManualIp::delete($ipId);
+        routingRedirect($serverId, '/manual-ips', 'Manual IP deleted');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/manual-ips', $e->getMessage(), true);
+    }
+});
+
+Router::get('/servers/{id}/routing/diagnostics', function ($params) use ($routingRender) {
+    $result = $_SESSION['routing_result'] ?? null; unset($_SESSION['routing_result']);
+    $routingRender((int) $params['id'], 'routing/diagnostics.twig', ['result' => $result]);
+});
+
+Router::post('/servers/{id}/routing/check', function ($params) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; requireServerAccess($serverId);
+    try {
+        $_SESSION['routing_result'] = (new RoutingService())->check($serverId, trim((string) ($_POST['domain'] ?? '')), (int) (Auth::user()['id'] ?? 0));
+        routingRedirect($serverId, '/diagnostics', 'Diagnostics finished');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/diagnostics', $e->getMessage(), true);
+    }
+});
+
+Router::post('/servers/{id}/routing/apply', function ($params) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; requireServerAccess($serverId);
+    try {
+        (new RoutingService())->apply($serverId, (int) (Auth::user()['id'] ?? 0));
+        routingRedirect($serverId, '', 'Routing applied');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '', $e->getMessage(), true);
+    }
+});
+
+Router::post('/servers/{id}/routing/warmup', function ($params) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; requireServerAccess($serverId);
+    try {
+        $_SESSION['routing_result'] = (new RoutingService())->warmup($serverId, (int) (Auth::user()['id'] ?? 0));
+        routingRedirect($serverId, '', 'DNS warmup finished');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '', $e->getMessage(), true);
+    }
+});
+
+Router::get('/servers/{id}/routing/status', function ($params) use ($routingRender) {
+    $serverId = (int) $params['id'];
+    try {
+        requireAuth(); requireServerAccess($serverId);
+        $status = (new RoutingService())->status($serverId);
+    } catch (Throwable $e) {
+        $status = ['exit_code' => 1, 'stdout' => '', 'stderr' => $e->getMessage(), 'rows' => []];
+    }
+    $routingRender($serverId, 'routing/status.twig', ['status' => $status]);
+});
+
+Router::get('/servers/{id}/routing/history', function ($params) use ($routingRender) {
+    $routingRender((int) $params['id'], 'routing/history.twig');
+});
+
+Router::post('/servers/{id}/routing/rollback', function ($params) {
+    requireAuth(); requireRoutingCsrf();
+    $serverId = (int) $params['id']; requireServerAccess($serverId);
+    try {
+        (new RoutingService())->rollback($serverId, (string) ($_POST['snapshot_dir'] ?? ''), (int) (Auth::user()['id'] ?? 0));
+        routingRedirect($serverId, '/history', 'Rollback completed');
+    } catch (Throwable $e) {
+        routingRedirect($serverId, '/history', $e->getMessage(), true);
+    }
+});
+
+// Split routing API
+Router::get('/api/servers/{id}/routing/rules', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+    $profile = RoutingProfile::getOrCreateForServer($serverId);
+    echo json_encode(['rules' => RoutingRule::listByProfile((int) $profile['id'])]);
+});
+
+Router::post('/api/servers/{id}/routing/rules', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+    try { $profile = RoutingProfile::getOrCreateForServer($serverId); $id = RoutingRule::create((int) $profile['id'], routingJsonInput()); echo json_encode(['success' => true, 'id' => $id]); }
+    catch (Throwable $e) { http_response_code(400); echo json_encode(['error' => $e->getMessage()]); }
+});
+
+Router::put('/api/servers/{id}/routing/rules/{rule_id}', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; $ruleId = (int) $params['rule_id']; requireApiServerAccess($serverId, $user);
+    try { $profile = RoutingProfile::getOrCreateForServer($serverId); $rule = RoutingRule::find($ruleId); if (!$rule || (int) $rule['profile_id'] !== (int) $profile['id']) throw new Exception('Rule not found'); RoutingRule::update($ruleId, routingJsonInput()); echo json_encode(['success' => true]); }
+    catch (Throwable $e) { http_response_code(400); echo json_encode(['error' => $e->getMessage()]); }
+});
+
+Router::delete('/api/servers/{id}/routing/rules/{rule_id}', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; $ruleId = (int) $params['rule_id']; requireApiServerAccess($serverId, $user);
+    try { $profile = RoutingProfile::getOrCreateForServer($serverId); $rule = RoutingRule::find($ruleId); if (!$rule || (int) $rule['profile_id'] !== (int) $profile['id']) throw new Exception('Rule not found'); RoutingRule::delete($ruleId); echo json_encode(['success' => true]); }
+    catch (Throwable $e) { http_response_code(400); echo json_encode(['error' => $e->getMessage()]); }
+});
+
+Router::get('/api/servers/{id}/routing/status', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+    try { echo json_encode((new RoutingService())->status($serverId)); }
+    catch (Throwable $e) { http_response_code(500); echo json_encode(['error' => $e->getMessage()]); }
+});
+
+foreach (['apply', 'warmup'] as $routingAction) {
+    Router::post('/api/servers/{id}/routing/' . $routingAction, function ($params) use ($routingAction) {
+        header('Content-Type: application/json');
+        $user = requireApiAuth(); if (!$user) return;
+        $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+        try { $svc = new RoutingService(); $result = $routingAction === 'apply' ? $svc->apply($serverId, (int) $user['id']) : $svc->warmup($serverId, (int) $user['id']); echo json_encode($result); }
+        catch (Throwable $e) { http_response_code(500); echo json_encode(['error' => $e->getMessage()]); }
+    });
+}
+
+Router::post('/api/servers/{id}/routing/check', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+    try { echo json_encode((new RoutingService())->check($serverId, (string) (routingJsonInput()['domain'] ?? ''), (int) $user['id'])); }
+    catch (Throwable $e) { http_response_code(400); echo json_encode(['error' => $e->getMessage()]); }
+});
+
+Router::get('/api/servers/{id}/routing/history', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+    $profile = RoutingProfile::getOrCreateForServer($serverId);
+    echo json_encode(['history' => RoutingApplyHistory::listByProfile((int) $profile['id'])]);
+});
+
+Router::post('/api/servers/{id}/routing/rollback', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+    try { echo json_encode((new RoutingService())->rollback($serverId, (string) (routingJsonInput()['snapshot_dir'] ?? ''), (int) $user['id'])); }
+    catch (Throwable $e) { http_response_code(400); echo json_encode(['error' => $e->getMessage()]); }
+});
+
+Router::get('/api/servers/{id}/routing/upstream', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+    $profile = RoutingProfile::getOrCreateForServer($serverId);
+    $upstream = RoutingUpstream::getActiveByProfile((int) $profile['id']);
+    if ($upstream) unset($upstream['config_content']);
+    echo json_encode(['upstream' => $upstream]);
+});
+
+Router::post('/api/servers/{id}/routing/upstream', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+    try { $data = routingJsonInput(); $id = (new RoutingService())->importUpstream($serverId, (string) ($data['config_content'] ?? ''), (string) ($data['name'] ?? 'niderland')); echo json_encode(['success' => true, 'id' => $id]); }
+    catch (Throwable $e) { http_response_code(400); echo json_encode(['error' => $e->getMessage()]); }
+});
+
+Router::post('/api/servers/{id}/routing/upstream/apply', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+    try { echo json_encode((new RoutingService())->applyUpstream($serverId, (int) $user['id'])); }
+    catch (Throwable $e) { http_response_code(500); echo json_encode(['error' => $e->getMessage()]); }
+});
+
+Router::post('/api/servers/{id}/routing/upstream/test', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+    try { echo json_encode((new RoutingService())->testUpstream($serverId, (int) $user['id'])); }
+    catch (Throwable $e) { http_response_code(500); echo json_encode(['error' => $e->getMessage()]); }
+});
+
+Router::delete('/api/servers/{id}/routing/upstream', function ($params) {
+    header('Content-Type: application/json');
+    $user = requireApiAuth(); if (!$user) return;
+    $serverId = (int) $params['id']; requireApiServerAccess($serverId, $user);
+    $profile = RoutingProfile::getOrCreateForServer($serverId);
+    RoutingUpstream::deleteActive((int) $profile['id']);
+    echo json_encode(['success' => true]);
+});
 
 
 // Server monitoring page

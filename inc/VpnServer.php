@@ -551,6 +551,85 @@ class VpnServer
     }
 
     /**
+     * Execute a multi-line shell script on the remote server and return stdout,
+     * stderr and exit code separately.
+     */
+    public function runRemoteScript(string $script): array
+    {
+        if (!$this->data) {
+            throw new Exception('Server not loaded');
+        }
+
+        $sshOptions = '-o LogLevel=ERROR -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no';
+        $keyFile = '';
+        $target = escapeshellarg($this->data['username'] . '@' . $this->data['host']);
+        $port = (int) $this->data['port'];
+
+        $runPart = '';
+        if (strtolower((string) ($this->data['username'] ?? '')) === 'root') {
+            $runPart = 'bash "$tmp"';
+        } elseif (!empty($this->data['ssh_key'])) {
+            $runPart = 'sudo -n bash "$tmp"';
+        } else {
+            $runPart = 'printf "%s\n" ' . escapeshellarg((string) $this->data['password']) . ' | sudo -S -p "" bash "$tmp"';
+        }
+
+        $remote = 'set -u; export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH; ' .
+            'tmp=$(mktemp /tmp/amnyam-routing.XXXXXX.sh); ' .
+            'cat > "$tmp"; chmod 700 "$tmp"; ' .
+            $runPart . '; rc=$?; rm -f "$tmp"; exit $rc';
+
+        if (!empty($this->data['ssh_key'])) {
+            $keyFile = tempnam(sys_get_temp_dir(), 'sshkey');
+            file_put_contents($keyFile, self::normalizeSshKey($this->data['ssh_key']));
+            chmod($keyFile, 0600);
+            $sshOptions .= ' -i ' . escapeshellarg($keyFile) . ' -o IdentitiesOnly=yes -o PubkeyAuthentication=yes -o PreferredAuthentications=publickey';
+            $cmd = sprintf('ssh -p %d %s %s %s', $port, $sshOptions, $target, escapeshellarg($remote));
+        } else {
+            $sshOptions .= ' -o PreferredAuthentications=password -o PubkeyAuthentication=no';
+            $cmd = sprintf(
+                'sshpass -p %s ssh -p %d %s %s %s',
+                escapeshellarg((string) $this->data['password']),
+                $port,
+                $sshOptions,
+                $target,
+                escapeshellarg($remote)
+            );
+        }
+
+        $descriptors = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $process = proc_open($cmd, $descriptors, $pipes);
+        if (!is_resource($process)) {
+            if ($keyFile && file_exists($keyFile)) {
+                unlink($keyFile);
+            }
+            throw new Exception('Failed to start SSH process');
+        }
+
+        fwrite($pipes[0], $script);
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]) ?: '';
+        fclose($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]) ?: '';
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        if ($keyFile && file_exists($keyFile)) {
+            unlink($keyFile);
+        }
+
+        return [
+            'exit_code' => $exitCode,
+            'stdout' => RoutingApplyHistory::maskSecrets($stdout),
+            'stderr' => RoutingApplyHistory::maskSecrets($stderr),
+        ];
+    }
+
+    /**
      * Detect whether docker commands require sudo on this server.
      * Uses a simple test command to check if docker works without sudo.
      * Results are cached per server instance.

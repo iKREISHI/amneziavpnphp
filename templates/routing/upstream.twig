@@ -1,0 +1,50 @@
+{% extends "layout.twig" %}
+{% block title %}Routing Upstream - {{ server.name }}{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <h1 class="text-3xl font-bold mb-1">Niderland Upstream</h1>
+  <p class="text-gray-600 mb-4">{{ server.name }}</p>
+  {% include "routing/_nav.twig" %}
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white rounded shadow p-6">
+      <h2 class="font-bold mb-4">Import external AmneziaWG/WireGuard config</h2>
+      <form method="POST" action="/servers/{{ server.id }}/routing/upstream/import" enctype="multipart/form-data" class="space-y-4">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input name="name" value="niderland" class="w-full px-3 py-2 border rounded">
+        <textarea name="config_content" rows="16" class="w-full px-3 py-2 border rounded font-mono text-xs" placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = ...&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = host:port"></textarea>
+        <input type="file" name="config_file" class="w-full px-3 py-2 border rounded" accept=".conf,.txt">
+        <button class="bg-purple-600 text-white px-4 py-2 rounded">Save Upstream</button>
+      </form>
+    </div>
+    <div class="bg-white rounded shadow p-6">
+      <h2 class="font-bold mb-4">Current upstream</h2>
+      {% if upstream %}
+        <dl class="space-y-2 text-sm">
+          <div><dt class="text-gray-500">Name</dt><dd>{{ upstream.name }}</dd></div>
+          <div><dt class="text-gray-500">Type</dt><dd>{{ upstream.type }}</dd></div>
+          <div><dt class="text-gray-500">Endpoint</dt><dd class="font-mono">{{ upstream.endpoint_host }}:{{ upstream.endpoint_port }}</dd></div>
+          <div><dt class="text-gray-500">Client address</dt><dd class="font-mono">{{ upstream.client_address }}</dd></div>
+          <div><dt class="text-gray-500">Last status</dt><dd>{{ upstream.last_status }}</dd></div>
+          <div><dt class="text-gray-500">Last applied</dt><dd>{{ upstream.last_applied_at|default('Never') }}</dd></div>
+        </dl>
+        <div class="flex flex-wrap gap-2 mt-6">
+          <form method="POST" action="/servers/{{ server.id }}/routing/upstream/apply">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="bg-green-600 text-white px-4 py-2 rounded">Apply Upstream</button>
+          </form>
+          <form method="POST" action="/servers/{{ server.id }}/routing/upstream/test">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="bg-blue-600 text-white px-4 py-2 rounded">Test Upstream</button>
+          </form>
+          <form method="POST" action="/servers/{{ server.id }}/routing/upstream/delete">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="bg-red-600 text-white px-4 py-2 rounded">Delete</button>
+          </form>
+        </div>
+      {% else %}
+        <p class="text-red-600">No active upstream config.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

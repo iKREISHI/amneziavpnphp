@@ -1,0 +1,33 @@
+{% extends "layout.twig" %}
+{% block title %}Routing History - {{ server.name }}{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <h1 class="text-3xl font-bold mb-1">Apply History</h1>
+  <p class="text-gray-600 mb-4">{{ server.name }}</p>
+  {% include "routing/_nav.twig" %}
+  <div class="bg-white rounded shadow overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50"><tr><th class="p-3 text-left">Date</th><th>Action</th><th>Status</th><th>Snapshot</th><th>Error</th><th>Actions</th></tr></thead>
+      <tbody>{% for h in history %}
+        <tr class="border-t align-top">
+          <td class="p-3 whitespace-nowrap">{{ h.created_at }}</td>
+          <td>{{ h.action }}</td>
+          <td>{{ h.status }}</td>
+          <td class="font-mono text-xs">{{ h.snapshot_dir }}</td>
+          <td class="text-red-600">{{ h.error_message }}</td>
+          <td class="p-3">
+            {% if h.snapshot_dir %}
+              <form method="POST" action="/servers/{{ server.id }}/routing/rollback">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="snapshot_dir" value="{{ h.snapshot_dir }}">
+                <button class="text-orange-600">Rollback</button>
+              </form>
+            {% endif %}
+            <details class="mt-2"><summary class="cursor-pointer text-gray-600">Output</summary><pre class="bg-gray-900 text-gray-100 p-3 rounded mt-2 overflow-x-auto">{{ h.stdout }}{{ h.stderr }}</pre></details>
+          </td>
+        </tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

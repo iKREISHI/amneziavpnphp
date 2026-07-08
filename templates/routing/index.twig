@@ -1,0 +1,63 @@
+{% extends "layout.twig" %}
+{% block title %}Routing - {{ server.name }}{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <div class="flex justify-between items-start mb-4">
+    <div>
+      <h1 class="text-3xl font-bold">Split Routing</h1>
+      <p class="text-gray-600">{{ server.name }} / {{ server.host }}</p>
+    </div>
+    <a href="/servers/{{ server.id }}" class="text-purple-600">Back to server</a>
+  </div>
+  {% include "routing/_nav.twig" %}
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div class="bg-white rounded shadow p-6 lg:col-span-2">
+      <h2 class="font-bold mb-4">Profile</h2>
+      <dl class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+        <div><dt class="text-gray-500">direct ipset</dt><dd class="font-mono">{{ profile.direct_ipset_name }}</dd></div>
+        <div><dt class="text-gray-500">niderland ipset</dt><dd class="font-mono">{{ profile.upstream_ipset_name }}</dd></div>
+        <div><dt class="text-gray-500">no quic ipset</dt><dd class="font-mono">{{ profile.no_quic_ipset_name }}</dd></div>
+        <div><dt class="text-gray-500">openmail route</dt><dd>{{ profile.direct_route_name }}</dd></div>
+        <div><dt class="text-gray-500">niderland route</dt><dd>{{ profile.upstream_route_name }}</dd></div>
+        <div><dt class="text-gray-500">upstream interface</dt><dd class="font-mono">{{ profile.upstream_interface }}</dd></div>
+        <div><dt class="text-gray-500">table</dt><dd class="font-mono">{{ profile.upstream_table_name }} / {{ profile.upstream_table_id }}</dd></div>
+        <div><dt class="text-gray-500">fwmark</dt><dd class="font-mono">{{ profile.upstream_fwmark }}</dd></div>
+        <div><dt class="text-gray-500">vpn input interface</dt><dd class="font-mono">{{ profile.vpn_input_interface }}</dd></div>
+        <div><dt class="text-gray-500">last apply</dt><dd>{{ last_apply.created_at|default('Never') }}</dd></div>
+      </dl>
+      <div class="mt-6 text-sm text-gray-700 space-y-2">
+        <p><b>Direct/Openmail:</b> IP and domains in direct_ip go through the default route/main table.</p>
+        <p><b>Niderland:</b> IP and domains in niderland_ip are marked with fwmark {{ profile.upstream_fwmark }} and routed through table {{ profile.upstream_table_name }} via {{ profile.upstream_interface }}.</p>
+        <p><b>No QUIC:</b> IP and domains in no_quic reject UDP/443 so the service can fall back to TCP/TLS.</p>
+        <p><b>Default TCP:</b> Any TCP traffic not matched by direct_ip is sent through niderland.</p>
+        <p><b>Default UDP/443:</b> UDP/443 is allowed unless destination IP is in no_quic.</p>
+      </div>
+    </div>
+    <div class="bg-white rounded shadow p-6">
+      <h2 class="font-bold mb-4">Actions</h2>
+      <div class="space-y-3">
+        <form method="POST" action="/servers/{{ server.id }}/routing/apply">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="w-full gradient-bg text-white px-4 py-2 rounded">Apply Routing</button>
+        </form>
+        <form method="POST" action="/servers/{{ server.id }}/routing/warmup">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="w-full bg-blue-600 text-white px-4 py-2 rounded">Warm up DNS</button>
+        </form>
+        <a class="block text-center bg-gray-700 text-white px-4 py-2 rounded" href="/servers/{{ server.id }}/routing/upstream">Configure Upstream</a>
+      </div>
+      <div class="mt-6 text-sm">
+        <div class="text-gray-500">Upstream</div>
+        {% if upstream %}
+          <div class="font-medium">{{ upstream.name }} ({{ upstream.type }})</div>
+          <div class="font-mono text-xs">{{ upstream.endpoint_host }}:{{ upstream.endpoint_port }}</div>
+          <div class="text-xs text-gray-500">{{ upstream.last_status }}</div>
+        {% else %}
+          <div class="text-red-600">Not configured</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

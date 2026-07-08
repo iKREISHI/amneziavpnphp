@@ -1,0 +1,39 @@
+{% extends "layout.twig" %}
+{% block title %}Routing Rules - {{ server.name }}{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <h1 class="text-3xl font-bold mb-1">Domain Rules</h1>
+  <p class="text-gray-600 mb-4">{{ server.name }}</p>
+  {% include "routing/_nav.twig" %}
+  <div class="bg-white rounded shadow p-6 mb-6">
+    <h2 class="font-bold mb-3">Create rule</h2>
+    <form method="POST" action="/servers/{{ server.id }}/routing/rules/create" class="flex flex-wrap gap-3 items-center">
+      {% include "routing/rule_form.twig" with {rule: {enabled: 1, priority: 100, match_type: 'suffix'}} %}
+      <button class="bg-purple-600 text-white px-4 py-2 rounded">Create</button>
+    </form>
+  </div>
+  <div class="bg-white rounded shadow overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50"><tr><th class="p-3 text-left">Domain</th><th>Match</th><th>Direct</th><th>Niderland</th><th>No QUIC</th><th>Enabled</th><th>Priority</th><th>Comment</th><th>Actions</th></tr></thead>
+      <tbody>
+      {% for rule in rules %}
+        <tr class="border-t">
+          <form method="POST" action="/servers/{{ server.id }}/routing/rules/{{ rule.id }}/update">
+          <td class="p-2"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input name="domain" value="{{ rule.domain }}" class="w-44 px-2 py-1 border rounded"></td>
+          <td><select name="match_type" class="px-2 py-1 border rounded"><option value="suffix" {% if rule.match_type == 'suffix' %}selected{% endif %}>suffix</option><option value="exact" {% if rule.match_type == 'exact' %}selected{% endif %}>exact</option></select></td>
+          <td class="text-center"><input type="checkbox" name="add_to_direct" value="1" {% if rule.add_to_direct %}checked{% endif %}></td>
+          <td class="text-center"><input type="checkbox" name="add_to_upstream" value="1" {% if rule.add_to_upstream %}checked{% endif %}></td>
+          <td class="text-center"><input type="checkbox" name="add_to_no_quic" value="1" {% if rule.add_to_no_quic %}checked{% endif %}></td>
+          <td class="text-center"><input type="checkbox" name="enabled" value="1" {% if rule.enabled %}checked{% endif %}></td>
+          <td><input name="priority" type="number" value="{{ rule.priority }}" class="w-20 px-2 py-1 border rounded"></td>
+          <td><input name="comment" value="{{ rule.comment }}" class="w-48 px-2 py-1 border rounded"></td>
+          <td class="p-2 whitespace-nowrap"><button class="text-blue-600">Save</button></form>
+            <form method="POST" action="/servers/{{ server.id }}/routing/rules/{{ rule.id }}/delete" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="text-red-600 ml-3">Delete</button></form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

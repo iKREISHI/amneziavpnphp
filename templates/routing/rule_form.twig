@@ -1,0 +1,12 @@
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input name="domain" value="{{ rule.domain|default('') }}" placeholder="claude.ai" class="px-3 py-2 border rounded" required>
+<select name="match_type" class="px-3 py-2 border rounded">
+  <option value="suffix" {% if rule.match_type|default('suffix') == 'suffix' %}selected{% endif %}>suffix</option>
+  <option value="exact" {% if rule.match_type|default('suffix') == 'exact' %}selected{% endif %}>exact</option>
+</select>
+<label class="inline-flex items-center gap-1"><input type="checkbox" name="add_to_direct" value="1" {% if rule.add_to_direct|default(0) %}checked{% endif %}> Direct/Openmail</label>
+<label class="inline-flex items-center gap-1"><input type="checkbox" name="add_to_upstream" value="1" {% if rule.add_to_upstream|default(0) %}checked{% endif %}> Niderland</label>
+<label class="inline-flex items-center gap-1"><input type="checkbox" name="add_to_no_quic" value="1" {% if rule.add_to_no_quic|default(0) %}checked{% endif %}> No QUIC</label>
+<label class="inline-flex items-center gap-1"><input type="checkbox" name="enabled" value="1" {% if rule.enabled|default(1) %}checked{% endif %}> Enabled</label>
+<input name="priority" type="number" value="{{ rule.priority|default(100) }}" class="w-24 px-3 py-2 border rounded">
+<input name="comment" value="{{ rule.comment|default('') }}" placeholder="Comment" class="px-3 py-2 border rounded">

@@ -1,0 +1,19 @@
+{% extends "layout.twig" %}
+{% block title %}Routing Diagnostics - {{ server.name }}{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <h1 class="text-3xl font-bold mb-1">Diagnostics</h1>
+  <p class="text-gray-600 mb-4">{{ server.name }}</p>
+  {% include "routing/_nav.twig" %}
+  <div class="bg-white rounded shadow p-6">
+    <form method="POST" action="/servers/{{ server.id }}/routing/check" class="flex gap-3 mb-6">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input name="domain" value="claude.ai" class="px-3 py-2 border rounded">
+      <button class="bg-purple-600 text-white px-4 py-2 rounded">Check route</button>
+    </form>
+    {% if result %}
+      <pre class="bg-gray-900 text-gray-100 p-4 rounded overflow-x-auto text-sm">{{ result.stdout }}{{ result.stderr }}</pre>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

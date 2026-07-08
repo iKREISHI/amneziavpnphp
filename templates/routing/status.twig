@@ -1,0 +1,21 @@
+{% extends "layout.twig" %}
+{% block title %}Routing Status - {{ server.name }}{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <h1 class="text-3xl font-bold mb-1">Status</h1>
+  <p class="text-gray-600 mb-4">{{ server.name }}</p>
+  {% include "routing/_nav.twig" %}
+  <div class="bg-white rounded shadow p-6">
+    <div class="mb-4 text-sm">Last successful apply: {{ status.last_apply.created_at|default('Never') }}</div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+      {% for row in status.rows %}
+        <div class="border rounded p-3 {% if row.ok %}bg-green-50{% else %}bg-red-50{% endif %}">
+          <div class="font-medium">{{ row.name }}</div>
+          <div class="text-sm text-gray-600">{{ row.value }}</div>
+        </div>
+      {% endfor %}
+    </div>
+    <pre class="bg-gray-900 text-gray-100 p-4 rounded overflow-x-auto text-sm">{{ status.stdout }}{{ status.stderr }}</pre>
+  </div>
+</div>
+{% endblock %}

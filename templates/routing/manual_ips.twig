@@ -1,0 +1,33 @@
+{% extends "layout.twig" %}
+{% block title %}Routing Manual IPs - {{ server.name }}{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <h1 class="text-3xl font-bold mb-1">Manual IPs</h1>
+  <p class="text-gray-600 mb-4">{{ server.name }}</p>
+  {% include "routing/_nav.twig" %}
+  <div class="bg-white rounded shadow p-6 mb-6">
+    <form method="POST" action="/servers/{{ server.id }}/routing/manual-ips/create" class="flex flex-wrap gap-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input name="value" placeholder="1.2.3.4 or 1.2.3.0/24" class="px-3 py-2 border rounded">
+      <select name="target_ipset" class="px-3 py-2 border rounded"><option>direct_ip</option><option>niderland_ip</option><option>no_quic</option></select>
+      <label class="flex items-center gap-2"><input type="checkbox" name="enabled" value="1" checked> Enabled</label>
+      <input name="comment" placeholder="Comment" class="px-3 py-2 border rounded">
+      <button class="bg-purple-600 text-white px-4 py-2 rounded">Create</button>
+    </form>
+  </div>
+  <div class="bg-white rounded shadow overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50"><tr><th class="p-3 text-left">Value</th><th>Target</th><th>Enabled</th><th>Comment</th><th>Actions</th></tr></thead>
+      <tbody>{% for ip in manual_ips %}
+        <tr class="border-t"><form method="POST" action="/servers/{{ server.id }}/routing/manual-ips/{{ ip.id }}/update">
+          <td class="p-2"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input name="value" value="{{ ip.value }}" class="px-2 py-1 border rounded"></td>
+          <td><select name="target_ipset" class="px-2 py-1 border rounded">{% for t in ['direct_ip','niderland_ip','no_quic'] %}<option {% if ip.target_ipset == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></td>
+          <td class="text-center"><input type="checkbox" name="enabled" value="1" {% if ip.enabled %}checked{% endif %}></td>
+          <td><input name="comment" value="{{ ip.comment }}" class="px-2 py-1 border rounded"></td>
+          <td class="p-2"><button class="text-blue-600">Save</button></form><form method="POST" action="/servers/{{ server.id }}/routing/manual-ips/{{ ip.id }}/delete" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="text-red-600 ml-3">Delete</button></form></td>
+        </tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

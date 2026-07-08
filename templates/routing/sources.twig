@@ -1,0 +1,36 @@
+{% extends "layout.twig" %}
+{% block title %}Routing IP Sources - {{ server.name }}{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <h1 class="text-3xl font-bold mb-1">IP Sources</h1>
+  <p class="text-gray-600 mb-4">{{ server.name }}</p>
+  {% include "routing/_nav.twig" %}
+  <div class="bg-white rounded shadow p-6 mb-6">
+    <form method="POST" action="/servers/{{ server.id }}/routing/sources/create" class="grid grid-cols-1 md:grid-cols-6 gap-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input name="name" placeholder="RU IP ranges" class="px-3 py-2 border rounded">
+      <select name="target_ipset" class="px-3 py-2 border rounded"><option>direct_ip</option><option>niderland_ip</option><option>no_quic</option></select>
+      <select name="source_type" class="px-3 py-2 border rounded"><option>url_cidr_list</option><option>url_ip_list</option></select>
+      <input name="url" placeholder="https://..." class="px-3 py-2 border rounded md:col-span-2">
+      <label class="flex items-center gap-2"><input type="checkbox" name="enabled" value="1" checked> Enabled</label>
+      <button class="bg-purple-600 text-white px-4 py-2 rounded">Create</button>
+    </form>
+  </div>
+  <div class="bg-white rounded shadow overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50"><tr><th class="p-3 text-left">Name</th><th>Target</th><th>Type</th><th>URL</th><th>Enabled</th><th>Last status</th><th>Items</th><th>Actions</th></tr></thead>
+      <tbody>{% for source in sources %}
+        <tr class="border-t"><form method="POST" action="/servers/{{ server.id }}/routing/sources/{{ source.id }}/update">
+          <td class="p-2"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input name="name" value="{{ source.name }}" class="px-2 py-1 border rounded"></td>
+          <td><select name="target_ipset" class="px-2 py-1 border rounded">{% for t in ['direct_ip','niderland_ip','no_quic'] %}<option {% if source.target_ipset == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></td>
+          <td><select name="source_type" class="px-2 py-1 border rounded">{% for t in ['url_cidr_list','url_ip_list'] %}<option {% if source.source_type == t %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></td>
+          <td><input name="url" value="{{ source.url }}" class="w-96 px-2 py-1 border rounded"></td>
+          <td class="text-center"><input type="checkbox" name="enabled" value="1" {% if source.enabled %}checked{% endif %}></td>
+          <td>{{ source.last_status }}</td><td>{{ source.last_items_count|default('-') }}</td>
+          <td class="p-2"><button class="text-blue-600">Save</button></form><form method="POST" action="/servers/{{ server.id }}/routing/sources/{{ source.id }}/delete" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="text-red-600 ml-3">Delete</button></form></td>
+        </tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
