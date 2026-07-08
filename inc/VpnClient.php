@@ -816,12 +816,11 @@ class VpnClient
         $containerName = $serverData['container_name'];
         $protocolSlug = (string) ($serverData['install_protocol'] ?? '');
         $isAwg2 = (stripos($containerName, 'awg2') !== false || $protocolSlug === 'awg2');
-        $wgTool = $isAwg2 ? 'awg' : 'wg';
+        $wgTool = self::wireGuardToolCommand($isAwg2);
 
         $cmd = sprintf(
-            "docker exec -i %s sh -lc 'set -e; umask 077; priv=\$(%s genkey | tr -d " . '"' . "\\r\\n" . '"' . "); [ -n \"\$priv\" ] || { echo empty_private_key; exit 1; }; pub=\$(printf " . '"' . "%%s\\n" . '"' . " \"\$priv\" | %s pubkey | tr -d " . '"' . "\\r\\n" . '"' . "); [ -n \"\$pub\" ] || { echo empty_public_key; exit 1; }; printf " . '"' . "%%s\\n---\\n%%s\\n" . '"' . " \"\$priv\" \"\$pub\"'",
+            "docker exec -i %s sh -lc 'set -e; umask 077; WG_TOOL=\$(%s); priv=\$(\"\$WG_TOOL\" genkey | tr -d " . '"' . "\\r\\n" . '"' . "); [ -n \"\$priv\" ] || { echo empty_private_key; exit 1; }; pub=\$(printf " . '"' . "%%s\\n" . '"' . " \"\$priv\" | \"\$WG_TOOL\" pubkey | tr -d " . '"' . "\\r\\n" . '"' . "); [ -n \"\$pub\" ] || { echo empty_public_key; exit 1; }; printf " . '"' . "%%s\\n---\\n%%s\\n" . '"' . " \"\$priv\" \"\$pub\"'",
             escapeshellarg($containerName),
-            $wgTool,
             $wgTool
         );
 
@@ -853,6 +852,24 @@ class VpnClient
             'private' => $private,
             'public' => $public
         ];
+    }
+
+    private static function wireGuardToolCommand(bool $preferAwg): string
+    {
+        if ($preferAwg) {
+            return '(command -v awg 2>/dev/null || command -v wg 2>/dev/null || { echo "Required command not found: awg or wg" >&2; exit 127; })';
+        }
+
+        return '(command -v wg 2>/dev/null || command -v awg 2>/dev/null || { echo "Required command not found: wg or awg" >&2; exit 127; })';
+    }
+
+    private static function wireGuardQuickToolCommand(bool $preferAwg): string
+    {
+        if ($preferAwg) {
+            return '(command -v awg-quick 2>/dev/null || command -v wg-quick 2>/dev/null || { echo "Required command not found: awg-quick or wg-quick" >&2; exit 127; })';
+        }
+
+        return '(command -v wg-quick 2>/dev/null || command -v awg-quick 2>/dev/null || { echo "Required command not found: wg-quick or awg-quick" >&2; exit 127; })';
     }
 
     /**
@@ -1300,9 +1317,9 @@ class VpnClient
             throw new Exception('Refusing to add client with empty public key');
         }
 
-        // Determine correct tool names (awg for AWG2, wg for standard)
-        $wgTool = $isAwg2 ? 'awg' : 'wg';
-        $wgQuickTool = $isAwg2 ? 'awg-quick' : 'wg-quick';
+        // Determine correct tool names, with fallback for containers that expose wg-compatible CLI only.
+        $wgTool = self::wireGuardToolCommand($isAwg2);
+        $wgQuickTool = self::wireGuardQuickToolCommand($isAwg2);
 
         // 1. Create temp file for PSK (to avoid shell escaping issues)
         $pskFile = '/tmp/' . bin2hex(random_bytes(8)) . '.psk';
@@ -1310,15 +1327,15 @@ class VpnClient
         self::executeServerCommand($serverData, $cmd1, true);
 
         // 2. Add peer using wg/awg set
-        $cmd2 = sprintf(
-            "docker exec -i %s %s set %s peer %s preshared-key %s allowed-ips %s/32",
-            $containerName,
+        $setPeerCommand = sprintf(
+            'WG_TOOL=$(%s); "$WG_TOOL" set %s peer %s preshared-key %s allowed-ips %s/32',
             $wgTool,
-            $ifaceName,
+            escapeshellarg($ifaceName),
             escapeshellarg($publicKey),
-            $pskFile,
-            $clientIP
+            escapeshellarg($pskFile),
+            escapeshellarg($clientIP)
         );
+        $cmd2 = sprintf("docker exec -i %s sh -lc %s", $containerName, escapeshellarg($setPeerCommand));
         self::executeServerCommand($serverData, $cmd2, true);
 
         // 3. Remove temp PSK file
@@ -1340,7 +1357,13 @@ class VpnClient
 
         // 6. CRITICAL: Reload WG interface to apply AWG obfuscation params
         // Without this, the interface uses standard WireGuard without Jc/S1/S2/H1-H4
-        $cmd5 = sprintf("docker exec -i %s sh -c 'ip link del %s 2>/dev/null || true; %s up %s/%s 2>&1'", $containerName, $ifaceName, $wgQuickTool, $configDir, $configFile);
+        $reloadCommand = sprintf(
+            'ip link del %s 2>/dev/null || true; WG_QUICK_TOOL=$(%s); "$WG_QUICK_TOOL" up %s 2>&1',
+            escapeshellarg($ifaceName),
+            $wgQuickTool,
+            escapeshellarg($configDir . '/' . $configFile)
+        );
+        $cmd5 = sprintf("docker exec -i %s sh -lc %s", $containerName, escapeshellarg($reloadCommand));
         self::executeServerCommand($serverData, $cmd5, true);
     }
 
@@ -1638,16 +1661,16 @@ class VpnClient
             $configFile = 'wg0.conf';
         }
         $ifaceName = str_replace('.conf', '', $configFile);
-        $wgTool = $isAwg2 ? 'awg' : 'wg';
+        $wgTool = self::wireGuardToolCommand($isAwg2);
 
         // First, remove using wg/awg command (live removal)
-        $removeCmd = sprintf(
-            "docker exec -i %s %s set %s peer %s remove",
-            $containerName,
+        $removePeerCommand = sprintf(
+            'WG_TOOL=$(%s); "$WG_TOOL" set %s peer %s remove',
             $wgTool,
-            $ifaceName,
+            escapeshellarg($ifaceName),
             escapeshellarg($publicKey)
         );
+        $removeCmd = sprintf("docker exec -i %s sh -lc %s", $containerName, escapeshellarg($removePeerCommand));
 
         self::executeServerCommand($serverData, $removeCmd, true);
 
@@ -1672,8 +1695,13 @@ class VpnClient
         self::executeServerCommand($serverData, $writeCmd, true);
 
         // Save config
-        $wgQuickTool = $isAwg2 ? 'awg-quick' : 'wg-quick';
-        $saveCmd = sprintf("docker exec -i %s %s save %s", $containerName, $wgQuickTool, $ifaceName);
+        $wgQuickTool = self::wireGuardQuickToolCommand($isAwg2);
+        $saveCommand = sprintf(
+            'WG_QUICK_TOOL=$(%s); "$WG_QUICK_TOOL" save %s',
+            $wgQuickTool,
+            escapeshellarg($ifaceName)
+        );
+        $saveCmd = sprintf("docker exec -i %s sh -lc %s", $containerName, escapeshellarg($saveCommand));
         self::executeServerCommand($serverData, $saveCmd, true);
 
         // Remove from clientsTable
