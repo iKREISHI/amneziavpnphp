@@ -54,6 +54,9 @@ class RoutingProfile
             if (in_array($key, ['direct_ipset_name', 'upstream_ipset_name', 'no_quic_ipset_name', 'upstream_interface', 'upstream_table_name', 'vpn_input_interface'], true)) {
                 self::validateIdentifier((string) $value, $key);
             }
+            if ($key === 'upstream_table_id' && ((int) $value < 1 || (int) $value > 2147483647)) {
+                throw new InvalidArgumentException('Invalid upstream_table_id');
+            }
             if ($key === 'upstream_fwmark' && !preg_match('/^0x[0-9a-fA-F]+$/', (string) $value)) {
                 throw new InvalidArgumentException('Invalid fwmark');
             }

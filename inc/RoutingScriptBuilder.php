@@ -5,6 +5,10 @@ class RoutingScriptBuilder
     public function buildApplyScript(array $profile, array $domainRules, array $ipSources, array $manualIps): string
     {
         $p = $this->safeProfile($profile);
+        $commands = ['ipset','iptables','ip','dnsmasq','dig','curl','systemctl'];
+        $routeTable = $this->routeTable($p);
+        $routeLabel = $this->routeTableLabel($p);
+        $ruleTablePattern = $this->ruleTablePattern($p);
         $dnsmasqLines = $this->dnsmasqLines($p, $domainRules);
         $warmupDomains = $this->domainList($domainRules);
         $sourceBlocks = '';
@@ -25,13 +29,13 @@ class RoutingScriptBuilder
             $warmup .= 'dig @127.0.0.1 -p ' . (int) $p['dnsmasq_port'] . ' ' . $this->q(ltrim($domain, '.')) . " A +short >/dev/null || true\n";
         }
 
-        return "#!/bin/bash\nset -euo pipefail\n" . $this->requiredCommands(['ipset','iptables','ip','dnsmasq','dig','curl','systemctl']) . "
+        return "#!/bin/bash\nset -euo pipefail\n" . $this->packageBootstrap($commands) . $this->requiredCommands($commands) . "
 SNAPSHOT_DIR=" . $this->q(rtrim($p['snapshot_base_dir'], '/')) . "/\$(date +%Y%m%d-%H%M%S)
 mkdir -p \"\$SNAPSHOT_DIR\"
 iptables-save > \"\$SNAPSHOT_DIR/iptables.rules\" || true
 ipset save > \"\$SNAPSHOT_DIR/ipset.rules\" || true
 ip rule show > \"\$SNAPSHOT_DIR/iprule.txt\" || true
-ip route show table " . $this->q($p['upstream_table_name']) . " > \"\$SNAPSHOT_DIR/route-" . $this->shText($p['upstream_table_name']) . ".txt\" || true
+ip route show table " . $this->q($routeTable) . " > \"\$SNAPSHOT_DIR/route-" . $this->shText($routeLabel) . ".txt\" || true
 cp " . $this->q($p['dnsmasq_config_path']) . " \"\$SNAPSHOT_DIR/amnyam-routing.conf\" 2>/dev/null || true
 cp /etc/wireguard/" . $this->q($p['upstream_interface'] . '.conf') . " \"\$SNAPSHOT_DIR/" . $this->shText($p['upstream_interface']) . ".conf\" 2>/dev/null || true
 
@@ -64,8 +68,8 @@ iptables -t mangle -A AMN_TO_AWG -m set --match-set " . $this->q($p['upstream_ip
 iptables -t mangle -A AMN_TO_AWG -m set --match-set " . $this->q($p['direct_ipset_name']) . " dst -j RETURN
 iptables -t mangle -A AMN_TO_AWG -p tcp -j MARK --set-mark " . $this->q($p['upstream_fwmark']) . "
 iptables -C FORWARD -i " . $this->q($p['vpn_input_interface']) . " -p udp --dport 443 -m set --match-set " . $this->q($p['no_quic_ipset_name']) . " dst -j REJECT 2>/dev/null || iptables -I FORWARD 1 -i " . $this->q($p['vpn_input_interface']) . " -p udp --dport 443 -m set --match-set " . $this->q($p['no_quic_ipset_name']) . " dst -j REJECT
-ip rule show | grep -q \"fwmark " . $this->grepText($p['upstream_fwmark']) . ".*" . $this->grepText($p['upstream_table_name']) . "\" || ip rule add fwmark " . $this->q($p['upstream_fwmark']) . " table " . $this->q($p['upstream_table_name']) . " priority " . (int) $p['upstream_rule_priority'] . "
-ip route replace default dev " . $this->q($p['upstream_interface']) . " table " . $this->q($p['upstream_table_name']) . "
+ip rule show | grep -Eq \"fwmark " . $this->grepText($p['upstream_fwmark']) . ".*" . $ruleTablePattern . "\" || ip rule add fwmark " . $this->q($p['upstream_fwmark']) . " table " . $this->q($routeTable) . " priority " . (int) $p['upstream_rule_priority'] . "
+ip route replace default dev " . $this->q($p['upstream_interface']) . " table " . $this->q($routeTable) . "
 " . $warmup . "
 ipset save > " . $this->q($p['ipset_persistent_path']) . "
 if command -v netfilter-persistent >/dev/null 2>&1; then netfilter-persistent save; fi
@@ -78,7 +82,7 @@ done
 echo \"AMN_TO_AWG:\"; iptables -t mangle -L AMN_TO_AWG -n -v --line-numbers || true
 echo \"FORWARD no_quic:\"; iptables -S FORWARD | grep " . $this->q($p['no_quic_ipset_name']) . " || true
 echo \"IP rules:\"; ip rule show || true
-echo \"Route table " . $this->shText($p['upstream_table_name']) . ":\"; ip route show table " . $this->q($p['upstream_table_name']) . " || true
+echo \"Route table " . $this->shText($routeLabel) . ":\"; ip route show table " . $this->q($routeTable) . " || true
 ";
     }
 
@@ -86,11 +90,16 @@ echo \"Route table " . $this->shText($p['upstream_table_name']) . ":\"; ip route
     {
         $p = $this->safeProfile($profile);
         $tool = ($upstream['type'] ?? '') === 'wireguard_config' ? 'wg-quick' : 'awg-quick';
+        $commands = $tool === 'wg-quick' ? ['ip','wg-quick','systemctl'] : ['ip','systemctl'];
+        $routeTable = $this->routeTable($p);
+        $ruleTablePattern = $this->ruleTablePattern($p);
         $configB64 = base64_encode((string) $upstream['config_content']);
         $iface = $p['upstream_interface'];
-        return "#!/bin/bash\nset -euo pipefail\n" . $this->requiredCommands(['ip','systemctl']) . "
-if ! command -v " . $this->q($tool) . " >/dev/null 2>&1; then echo \"Required command not found: " . $this->shText($tool) . "\" >&2; exit 1; fi
-mkdir -p /etc/wireguard
+        $toolCheck = $tool === 'awg-quick'
+            ? "if ! command -v " . $this->q($tool) . " >/dev/null 2>&1; then echo \"Required command not found: " . $this->shText($tool) . ". Install host AmneziaWG tools, then retry.\" >&2; exit 1; fi\n"
+            : '';
+        return "#!/bin/bash\nset -euo pipefail\n" . $this->packageBootstrap($commands) . $this->requiredCommands($commands) . "
+" . $toolCheck . "mkdir -p /etc/wireguard
 umask 077
 base64 -d > /etc/wireguard/" . $this->q($iface . '.conf') . " <<'AMNYAM_UPSTREAM_CONF'
 " . $configB64 . "
@@ -99,8 +108,8 @@ chmod 600 /etc/wireguard/" . $this->q($iface . '.conf') . "
 " . $this->q($tool) . " down " . $this->q($iface) . " 2>/dev/null || true
 " . $this->q($tool) . " up " . $this->q($iface) . "
 ip link show " . $this->q($iface) . " >/dev/null
-ip rule show | grep -q \"fwmark " . $this->grepText($p['upstream_fwmark']) . ".*" . $this->grepText($p['upstream_table_name']) . "\" || ip rule add fwmark " . $this->q($p['upstream_fwmark']) . " table " . $this->q($p['upstream_table_name']) . " priority " . (int) $p['upstream_rule_priority'] . "
-ip route replace default dev " . $this->q($iface) . " table " . $this->q($p['upstream_table_name']) . "
+ip rule show | grep -Eq \"fwmark " . $this->grepText($p['upstream_fwmark']) . ".*" . $ruleTablePattern . "\" || ip rule add fwmark " . $this->q($p['upstream_fwmark']) . " table " . $this->q($routeTable) . " priority " . (int) $p['upstream_rule_priority'] . "
+ip route replace default dev " . $this->q($iface) . " table " . $this->q($routeTable) . "
 echo \"Upstream " . $this->shText($iface) . " applied successfully\"
 ip addr show " . $this->q($iface) . " || true
 wg show " . $this->q($iface) . " 2>/dev/null || awg show " . $this->q($iface) . " 2>/dev/null || true
@@ -110,7 +119,8 @@ wg show " . $this->q($iface) . " 2>/dev/null || awg show " . $this->q($iface) . 
     public function buildWarmupScript(array $profile, array $domainRules): string
     {
         $p = $this->safeProfile($profile);
-        $script = "#!/bin/bash\nset -euo pipefail\n" . $this->requiredCommands(['dig','ipset']);
+        $commands = ['dig','ipset'];
+        $script = "#!/bin/bash\nset -euo pipefail\n" . $this->packageBootstrap($commands) . $this->requiredCommands($commands);
         foreach ($this->domainList($domainRules) as $domain) {
             $script .= 'dig @127.0.0.1 -p ' . (int) $p['dnsmasq_port'] . ' ' . $this->q(ltrim($domain, '.')) . " A +short >/dev/null || true\n";
         }
@@ -123,11 +133,12 @@ wg show " . $this->q($iface) . " 2>/dev/null || awg show " . $this->q($iface) . 
     public function buildCheckScript(array $profile, string $domain): string
     {
         $p = $this->safeProfile($profile);
+        $commands = ['dig','ipset'];
         $domain = strtolower(trim($domain));
         if (!preg_match('/^\.?[a-z0-9][a-z0-9.-]*[a-z0-9]$/i', $domain)) {
             throw new InvalidArgumentException('Invalid domain');
         }
-        return "#!/bin/bash\nset -euo pipefail\n" . $this->requiredCommands(['dig','ipset']) . "
+        return "#!/bin/bash\nset -euo pipefail\n" . $this->packageBootstrap($commands) . $this->requiredCommands($commands) . "
 d=" . $this->q($domain) . "
 ips=\$(dig @127.0.0.1 -p " . (int) $p['dnsmasq_port'] . " +short A \"\$d\" | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' | sort -u)
 if [ -z \"\$ips\" ]; then echo \"\$d -> A-records not found\"; exit 1; fi
@@ -168,6 +179,9 @@ echo \"Rollback completed\"
     public function buildStatusScript(array $profile): string
     {
         $p = $this->safeProfile($profile);
+        $routeTable = $this->routeTable($p);
+        $routeLabel = $this->routeTableLabel($p);
+        $ruleTablePattern = $this->ruleTablePattern($p);
         return "#!/bin/bash\nset -uo pipefail
 for setname in " . $this->q($p['direct_ipset_name']) . " " . $this->q($p['upstream_ipset_name']) . " " . $this->q($p['no_quic_ipset_name']) . "; do
   if ipset list \"\$setname\" >/dev/null 2>&1; then echo \"ipset \$setname: exists count=\$(ipset list \"\$setname\" | grep -c '^[0-9]' || true)\"; else echo \"ipset \$setname: missing\"; fi
@@ -175,8 +189,8 @@ done
 iptables -t mangle -L AMN_TO_AWG -n >/dev/null 2>&1 && echo \"chain AMN_TO_AWG: exists\" || echo \"chain AMN_TO_AWG: missing\"
 iptables -t mangle -C PREROUTING -i " . $this->q($p['vpn_input_interface']) . " -j AMN_TO_AWG 2>/dev/null && echo \"prerouting hook: yes\" || echo \"prerouting hook: no\"
 iptables -S FORWARD | grep -q " . $this->q($p['no_quic_ipset_name']) . " && echo \"no_quic forward: yes\" || echo \"no_quic forward: no\"
-ip rule show | grep -q \"fwmark " . $this->grepText($p['upstream_fwmark']) . ".*" . $this->grepText($p['upstream_table_name']) . "\" && echo \"ip rule: yes\" || echo \"ip rule: no\"
-ip route show table " . $this->q($p['upstream_table_name']) . " | grep -q \"default dev " . $this->grepText($p['upstream_interface']) . "\" && echo \"route table " . $this->shText($p['upstream_table_name']) . ": default yes\" || echo \"route table " . $this->shText($p['upstream_table_name']) . ": default no\"
+ip rule show | grep -Eq \"fwmark " . $this->grepText($p['upstream_fwmark']) . ".*" . $ruleTablePattern . "\" && echo \"ip rule: yes\" || echo \"ip rule: no\"
+ip route show table " . $this->q($routeTable) . " | grep -q \"default dev " . $this->grepText($p['upstream_interface']) . "\" && echo \"route table " . $this->shText($routeLabel) . ": default yes\" || echo \"route table " . $this->shText($routeLabel) . ": default no\"
 systemctl is-active dnsmasq 2>/dev/null | sed 's/^/dnsmasq: /' || echo \"dnsmasq: unknown\"
 ip link show " . $this->q($p['upstream_interface']) . " >/dev/null 2>&1 && echo \"upstream link " . $this->shText($p['upstream_interface']) . ": exists\" || echo \"upstream link " . $this->shText($p['upstream_interface']) . ": missing\"
 wg show " . $this->q($p['upstream_interface']) . " 2>/dev/null || awg show " . $this->q($p['upstream_interface']) . " 2>/dev/null || true
@@ -235,6 +249,10 @@ wg show " . $this->q($p['upstream_interface']) . " 2>/dev/null || awg show " . $
         foreach (['direct_ipset_name','upstream_ipset_name','no_quic_ipset_name','upstream_interface','upstream_table_name','vpn_input_interface'] as $field) {
             RoutingProfile::validateIdentifier((string) $profile[$field], $field);
         }
+        $tableId = (int) ($profile['upstream_table_id'] ?? 0);
+        if ($tableId < 1 || $tableId > 2147483647) {
+            throw new InvalidArgumentException('Invalid upstream_table_id');
+        }
         if (!preg_match('/^0x[0-9a-fA-F]+$/', (string) $profile['upstream_fwmark'])) {
             throw new InvalidArgumentException('Invalid fwmark');
         }
@@ -258,6 +276,83 @@ wg show " . $this->q($p['upstream_interface']) . " 2>/dev/null || awg show " . $
             $script .= 'command -v ' . $this->q($cmd) . ' >/dev/null 2>&1 || { echo "Required command not found: ' . $this->shText($cmd) . "\" >&2; exit 1; }\n";
         }
         return $script;
+    }
+
+    private function packageBootstrap(array $commands): string
+    {
+        $packages = [
+            'apt' => [
+                'ipset' => 'ipset',
+                'iptables' => 'iptables',
+                'ip' => 'iproute2',
+                'dnsmasq' => 'dnsmasq',
+                'dig' => 'dnsutils',
+                'curl' => 'curl',
+                'wg-quick' => 'wireguard-tools',
+            ],
+            'dnf' => [
+                'ipset' => 'ipset',
+                'iptables' => 'iptables',
+                'ip' => 'iproute',
+                'dnsmasq' => 'dnsmasq',
+                'dig' => 'bind-utils',
+                'curl' => 'curl',
+                'wg-quick' => 'wireguard-tools',
+            ],
+            'yum' => [
+                'ipset' => 'ipset',
+                'iptables' => 'iptables',
+                'ip' => 'iproute',
+                'dnsmasq' => 'dnsmasq',
+                'dig' => 'bind-utils',
+                'curl' => 'curl',
+                'wg-quick' => 'wireguard-tools',
+            ],
+            'apk' => [
+                'ipset' => 'ipset',
+                'iptables' => 'iptables',
+                'ip' => 'iproute2',
+                'dnsmasq' => 'dnsmasq',
+                'dig' => 'bind-tools',
+                'curl' => 'curl',
+                'wg-quick' => 'wireguard-tools',
+            ],
+        ];
+
+        $install = [];
+        foreach ($packages as $manager => $map) {
+            $install[$manager] = [];
+            foreach ($commands as $command) {
+                if (isset($map[$command])) {
+                    $install[$manager][] = $map[$command];
+                }
+            }
+            $install[$manager] = array_values(array_unique($install[$manager]));
+        }
+
+        if (!$install['apt'] && !$install['dnf'] && !$install['yum'] && !$install['apk']) {
+            return '';
+        }
+
+        $commandList = implode(' ', array_map([$this, 'q'], $commands));
+        $missingList = implode(' ', array_map([$this, 'shText'], $commands));
+
+        return "AMNYAM_MISSING=0\nfor cmd in " . $commandList . "; do\n  command -v \"\$cmd\" >/dev/null 2>&1 || AMNYAM_MISSING=1\ndone\nif [ \"\$AMNYAM_MISSING\" -ne 0 ]; then\n  if command -v apt-get >/dev/null 2>&1; then\n    export DEBIAN_FRONTEND=noninteractive\n    apt-get update -qq\n    apt-get install -y -qq " . implode(' ', array_map([$this, 'q'], $install['apt'])) . "\n  elif command -v dnf >/dev/null 2>&1; then\n    dnf install -y " . implode(' ', array_map([$this, 'q'], $install['dnf'])) . "\n  elif command -v yum >/dev/null 2>&1; then\n    yum install -y " . implode(' ', array_map([$this, 'q'], $install['yum'])) . "\n  elif command -v apk >/dev/null 2>&1; then\n    apk add --no-cache " . implode(' ', array_map([$this, 'q'], $install['apk'])) . "\n  else\n    echo \"Required command(s) missing and no supported package manager found: " . $missingList . "\" >&2\n  fi\nfi\n";
+    }
+
+    private function routeTable(array $p): string
+    {
+        return (string) (int) $p['upstream_table_id'];
+    }
+
+    private function routeTableLabel(array $p): string
+    {
+        return $p['upstream_table_name'] . ' (' . $this->routeTable($p) . ')';
+    }
+
+    private function ruleTablePattern(array $p): string
+    {
+        return '(lookup )?(' . $this->grepText($p['upstream_table_name']) . '|' . $this->grepText($this->routeTable($p)) . ')([[:space:]]|$)';
     }
 
     private function q(string $value): string
