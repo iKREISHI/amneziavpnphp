@@ -7,7 +7,14 @@
   {% include "routing/_nav.twig" %}
   <div class="bg-white rounded shadow p-6 mb-6">
     <h2 class="font-bold mb-3">Create rule</h2>
-    <form method="POST" action="/servers/{{ server.id }}/routing/rules/create" class="flex flex-wrap gap-3 items-center">
+    <div class="flex flex-wrap gap-2 mb-4 text-sm">
+      <button type="button" class="routing-preset px-3 py-1 rounded bg-green-100 text-green-800" data-direct="1" data-upstream="0" data-noquic="0">Direct/Openmail</button>
+      <button type="button" class="routing-preset px-3 py-1 rounded bg-blue-100 text-blue-800" data-direct="0" data-upstream="1" data-noquic="0">Niderland</button>
+      <button type="button" class="routing-preset px-3 py-1 rounded bg-purple-100 text-purple-800" data-direct="0" data-upstream="1" data-noquic="1">Niderland + No QUIC</button>
+      <button type="button" class="routing-preset px-3 py-1 rounded bg-orange-100 text-orange-800" data-direct="0" data-upstream="0" data-noquic="1">No QUIC only</button>
+      <button type="button" class="routing-preset px-3 py-1 rounded bg-gray-100 text-gray-800" data-domain=".ru" data-match="suffix" data-direct="1" data-upstream="0" data-noquic="0">RU suffix direct</button>
+    </div>
+    <form method="POST" action="/servers/{{ server.id }}/routing/rules/create" class="flex flex-wrap gap-3 items-center" id="routingRuleCreateForm">
       {% include "routing/rule_form.twig" with {rule: {enabled: 1, priority: 100, match_type: 'suffix'}} %}
       <button class="bg-purple-600 text-white px-4 py-2 rounded">Create</button>
     </form>
@@ -36,4 +43,33 @@
     </table>
   </div>
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.querySelectorAll('.routing-preset').forEach((button) => {
+  button.addEventListener('click', () => {
+    const form = document.getElementById('routingRuleCreateForm');
+    if (!form) return;
+    const setChecked = (name, value) => {
+      const input = form.querySelector(`[name="${name}"]`);
+      if (input) input.checked = value === '1';
+    };
+    if (button.dataset.domain) {
+      const domain = form.querySelector('[name="domain"]');
+      if (domain) domain.value = button.dataset.domain;
+    }
+    if (button.dataset.match) {
+      const match = form.querySelector('[name="match_type"]');
+      if (match) match.value = button.dataset.match;
+    }
+    setChecked('add_to_direct', button.dataset.direct || '0');
+    setChecked('add_to_upstream', button.dataset.upstream || '0');
+    setChecked('add_to_no_quic', button.dataset.noquic || '0');
+    const enabled = form.querySelector('[name="enabled"]');
+    if (enabled) enabled.checked = true;
+    const domain = form.querySelector('[name="domain"]');
+    if (domain && !button.dataset.domain) domain.focus();
+  });
+});
+</script>
 {% endblock %}
