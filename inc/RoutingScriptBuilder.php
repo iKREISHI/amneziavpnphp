@@ -23,7 +23,7 @@ class RoutingScriptBuilder
         foreach ($manualIps as $ip) {
             $manualBlocks .= 'ipset add ' . $this->q($this->ipsetName($p, (string) $ip['target_ipset'])) . ' ' . $this->q((string) $ip['value']) . " 2>/dev/null || true\n";
         }
-        $dnsmasqConfig = implode("\n", $dnsmasqLines) . "\n";
+        $dnsmasqConfig = implode("\n", $this->dnsmasqBaseLines($p)) . "\n" . implode("\n", $dnsmasqLines) . "\n";
         $warmup = '';
         foreach ($warmupDomains as $domain) {
             $warmup .= 'dig @127.0.0.1 -p ' . (int) $p['dnsmasq_port'] . ' ' . $this->q(ltrim($domain, '.')) . " A +short >/dev/null || true\n";
@@ -237,6 +237,19 @@ wg show " . $this->q($p['upstream_interface']) . " 2>/dev/null || awg show " . $
         return $lines;
     }
 
+    private function dnsmasqBaseLines(array $p): array
+    {
+        return [
+            'port=' . (int) $p['dnsmasq_port'],
+            'listen-address=127.0.0.1',
+            'bind-interfaces',
+            'no-hosts',
+            'no-resolv',
+            'server=1.1.1.1',
+            'server=8.8.8.8',
+        ];
+    }
+
     private function domainList(array $rules): array
     {
         $domains = [];
@@ -448,8 +461,12 @@ SH;
 
         $commandList = implode(' ', array_map([$this, 'q'], $commands));
         $missingList = implode(' ', array_map([$this, 'shText'], $commands));
+        $aptInstall = implode(' ', array_map([$this, 'q'], $install['apt']));
+        $dnfInstall = implode(' ', array_map([$this, 'q'], $install['dnf']));
+        $yumInstall = implode(' ', array_map([$this, 'q'], $install['yum']));
+        $apkInstall = implode(' ', array_map([$this, 'q'], $install['apk']));
 
-        return "AMNYAM_MISSING=0\nfor cmd in " . $commandList . "; do\n  command -v \"\$cmd\" >/dev/null 2>&1 || AMNYAM_MISSING=1\ndone\nif [ \"\$AMNYAM_MISSING\" -ne 0 ]; then\n  if command -v apt-get >/dev/null 2>&1; then\n    export DEBIAN_FRONTEND=noninteractive\n    apt-get update -qq\n    apt-get install -y -qq " . implode(' ', array_map([$this, 'q'], $install['apt'])) . "\n  elif command -v dnf >/dev/null 2>&1; then\n    dnf install -y " . implode(' ', array_map([$this, 'q'], $install['dnf'])) . "\n  elif command -v yum >/dev/null 2>&1; then\n    yum install -y " . implode(' ', array_map([$this, 'q'], $install['yum'])) . "\n  elif command -v apk >/dev/null 2>&1; then\n    apk add --no-cache " . implode(' ', array_map([$this, 'q'], $install['apk'])) . "\n  else\n    echo \"Required command(s) missing and no supported package manager found: " . $missingList . "\" >&2\n  fi\nfi\n";
+        return "AMNYAM_MISSING=0\nfor cmd in " . $commandList . "; do\n  command -v \"\$cmd\" >/dev/null 2>&1 || AMNYAM_MISSING=1\ndone\nif [ \"\$AMNYAM_MISSING\" -ne 0 ]; then\n  if command -v apt-get >/dev/null 2>&1; then\n    export DEBIAN_FRONTEND=noninteractive\n    export NEEDRESTART_MODE=a\n    apt-get update -qq >/dev/null\n    apt-get install -y -qq " . $aptInstall . " >/dev/null 2>&1\n  elif command -v dnf >/dev/null 2>&1; then\n    dnf install -y " . $dnfInstall . " >/dev/null\n  elif command -v yum >/dev/null 2>&1; then\n    yum install -y " . $yumInstall . " >/dev/null\n  elif command -v apk >/dev/null 2>&1; then\n    apk add --no-cache " . $apkInstall . " >/dev/null\n  else\n    echo \"Required command(s) missing and no supported package manager found: " . $missingList . "\" >&2\n  fi\nfi\n";
     }
 
     private function routeTable(array $p): string
