@@ -29,7 +29,7 @@ class RoutingScriptBuilder
             $warmup .= 'dig @127.0.0.1 -p ' . (int) $p['dnsmasq_port'] . ' ' . $this->q(ltrim($domain, '.')) . " A +short >/dev/null || true\n";
         }
 
-        return "#!/bin/bash\nset -euo pipefail\n" . $this->packageBootstrap($commands) . $this->requiredCommands($commands) . "
+        return $this->scriptHeader('set -euo pipefail') . $this->packageBootstrap($commands) . $this->requiredCommands($commands) . "
 SNAPSHOT_DIR=" . $this->q(rtrim($p['snapshot_base_dir'], '/')) . "/\$(date +%Y%m%d-%H%M%S)
 mkdir -p \"\$SNAPSHOT_DIR\"
 iptables-save > \"\$SNAPSHOT_DIR/iptables.rules\" || true
@@ -98,7 +98,7 @@ echo \"Route table " . $this->shText($routeLabel) . ":\"; ip route show table " 
         $toolCheck = $tool === 'awg-quick'
             ? "if ! command -v " . $this->q($tool) . " >/dev/null 2>&1; then echo \"Required command not found: " . $this->shText($tool) . ". Install host AmneziaWG tools, then retry.\" >&2; exit 1; fi\n"
             : '';
-        return "#!/bin/bash\nset -euo pipefail\n" . $this->packageBootstrap($commands) . $this->requiredCommands($commands) . "
+        return $this->scriptHeader('set -euo pipefail') . $this->packageBootstrap($commands) . $this->requiredCommands($commands) . "
 " . $toolCheck . "mkdir -p /etc/wireguard
 umask 077
 base64 -d > /etc/wireguard/" . $this->q($iface . '.conf') . " <<'AMNYAM_UPSTREAM_CONF'
@@ -120,7 +120,7 @@ wg show " . $this->q($iface) . " 2>/dev/null || awg show " . $this->q($iface) . 
     {
         $p = $this->safeProfile($profile);
         $commands = ['dig','ipset'];
-        $script = "#!/bin/bash\nset -euo pipefail\n" . $this->packageBootstrap($commands) . $this->requiredCommands($commands);
+        $script = $this->scriptHeader('set -euo pipefail') . $this->packageBootstrap($commands) . $this->requiredCommands($commands);
         foreach ($this->domainList($domainRules) as $domain) {
             $script .= 'dig @127.0.0.1 -p ' . (int) $p['dnsmasq_port'] . ' ' . $this->q(ltrim($domain, '.')) . " A +short >/dev/null || true\n";
         }
@@ -138,7 +138,7 @@ wg show " . $this->q($iface) . " 2>/dev/null || awg show " . $this->q($iface) . 
         if (!preg_match('/^\.?[a-z0-9][a-z0-9.-]*[a-z0-9]$/i', $domain)) {
             throw new InvalidArgumentException('Invalid domain');
         }
-        return "#!/bin/bash\nset -euo pipefail\n" . $this->packageBootstrap($commands) . $this->requiredCommands($commands) . "
+        return $this->scriptHeader('set -euo pipefail') . $this->packageBootstrap($commands) . $this->requiredCommands($commands) . "
 d=" . $this->q($domain) . "
 ips=\$(dig @127.0.0.1 -p " . (int) $p['dnsmasq_port'] . " +short A \"\$d\" | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' | sort -u)
 if [ -z \"\$ips\" ]; then echo \"\$d -> A-records not found\"; exit 1; fi
@@ -165,7 +165,7 @@ if [ \"\$noquic_count\" -gt 0 ]; then echo \"UDP/443 -> REJECT for \$noquic_coun
         if (!preg_match('#^/root/amnyam-routing-snapshots/[0-9]{8}-[0-9]{6}$#', $snapshotDir)) {
             throw new InvalidArgumentException('Invalid snapshot path');
         }
-        return "#!/bin/bash\nset -euo pipefail\nSNAPSHOT_DIR=" . $this->q($snapshotDir) . "
+        return $this->scriptHeader('set -euo pipefail') . "SNAPSHOT_DIR=" . $this->q($snapshotDir) . "
 if [ ! -d \"\$SNAPSHOT_DIR\" ]; then echo \"Snapshot directory not found: \$SNAPSHOT_DIR\"; exit 1; fi
 if [ -f \"\$SNAPSHOT_DIR/ipset.rules\" ]; then ipset restore < \"\$SNAPSHOT_DIR/ipset.rules\" || true; fi
 if [ -f \"\$SNAPSHOT_DIR/iptables.rules\" ]; then iptables-restore < \"\$SNAPSHOT_DIR/iptables.rules\" || true; fi
@@ -182,7 +182,7 @@ echo \"Rollback completed\"
         $routeTable = $this->routeTable($p);
         $routeLabel = $this->routeTableLabel($p);
         $ruleTablePattern = $this->ruleTablePattern($p);
-        return "#!/bin/bash\nset -uo pipefail
+        return $this->scriptHeader('set -uo pipefail') . "
 for setname in " . $this->q($p['direct_ipset_name']) . " " . $this->q($p['upstream_ipset_name']) . " " . $this->q($p['no_quic_ipset_name']) . "; do
   if ipset list \"\$setname\" >/dev/null 2>&1; then echo \"ipset \$setname: exists count=\$(ipset list \"\$setname\" | grep -c '^[0-9]' || true)\"; else echo \"ipset \$setname: missing\"; fi
 done
@@ -200,7 +200,7 @@ wg show " . $this->q($p['upstream_interface']) . " 2>/dev/null || awg show " . $
     public function buildUpstreamTestScript(array $profile): string
     {
         $p = $this->safeProfile($profile);
-        return "#!/bin/bash\nset -uo pipefail
+        return $this->scriptHeader('set -uo pipefail') . "
 ip link show " . $this->q($p['upstream_interface']) . " >/dev/null 2>&1 && echo \"link: up\" || { echo \"link: missing\"; exit 1; }
 ip route get 1.1.1.1 mark " . $this->q($p['upstream_fwmark']) . " 2>/dev/null || true
 wg show " . $this->q($p['upstream_interface']) . " 2>/dev/null || awg show " . $this->q($p['upstream_interface']) . " 2>/dev/null || true
@@ -276,6 +276,11 @@ wg show " . $this->q($p['upstream_interface']) . " 2>/dev/null || awg show " . $
             $script .= 'command -v ' . $this->q($cmd) . ' >/dev/null 2>&1 || { echo "Required command not found: ' . $this->shText($cmd) . "\" >&2; exit 1; }\n";
         }
         return $script;
+    }
+
+    private function scriptHeader(string $setFlags): string
+    {
+        return "#!/bin/bash\n" . $setFlags . "\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:\$PATH\n";
     }
 
     private function packageBootstrap(array $commands): string
