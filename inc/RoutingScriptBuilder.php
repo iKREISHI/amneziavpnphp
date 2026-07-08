@@ -95,18 +95,17 @@ echo \"Route table " . $this->shText($routeLabel) . ":\"; ip route show table " 
         $ruleTablePattern = $this->ruleTablePattern($p);
         $configB64 = base64_encode((string) $upstream['config_content']);
         $iface = $p['upstream_interface'];
-        $toolCheck = $tool === 'awg-quick'
-            ? "if ! command -v " . $this->q($tool) . " >/dev/null 2>&1; then echo \"Required command not found: " . $this->shText($tool) . ". Install host AmneziaWG tools, then retry.\" >&2; exit 1; fi\n"
-            : '';
+        $awgBootstrap = $tool === 'awg-quick' ? $this->amneziawgHostBootstrap() : '';
+        $toolCommand = $tool === 'awg-quick' ? 'amnyam_awg_quick' : $this->q($tool);
         return $this->scriptHeader('set -euo pipefail') . $this->packageBootstrap($commands) . $this->requiredCommands($commands) . "
-" . $toolCheck . "mkdir -p /etc/wireguard
+" . $awgBootstrap . "mkdir -p /etc/wireguard
 umask 077
 base64 -d > /etc/wireguard/" . $this->q($iface . '.conf') . " <<'AMNYAM_UPSTREAM_CONF'
 " . $configB64 . "
 AMNYAM_UPSTREAM_CONF
 chmod 600 /etc/wireguard/" . $this->q($iface . '.conf') . "
-" . $this->q($tool) . " down " . $this->q($iface) . " 2>/dev/null || true
-" . $this->q($tool) . " up " . $this->q($iface) . "
+" . $toolCommand . " down " . $this->q($iface) . " 2>/dev/null || true
+" . $toolCommand . " up " . $this->q($iface) . "
 ip link show " . $this->q($iface) . " >/dev/null
 ip rule show | grep -Eq \"fwmark " . $this->grepText($p['upstream_fwmark']) . ".*" . $ruleTablePattern . "\" || ip rule add fwmark " . $this->q($p['upstream_fwmark']) . " table " . $this->q($routeTable) . " priority " . (int) $p['upstream_rule_priority'] . "
 ip route replace default dev " . $this->q($iface) . " table " . $this->q($routeTable) . "
@@ -281,6 +280,108 @@ wg show " . $this->q($p['upstream_interface']) . " 2>/dev/null || awg show " . $
     private function scriptHeader(string $setFlags): string
     {
         return "#!/bin/bash\n" . $setFlags . "\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:\$PATH\n";
+    }
+
+    private function amneziawgHostBootstrap(): string
+    {
+        return <<<'SH'
+install_amnyam_awg_base_packages() {
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq ca-certificates curl unzip gpg iptables >/dev/null
+    add_amnyam_amnezia_apt_repo || true
+    for pkg in amneziawg-tools amneziawg-go amneziawg-dkms wireguard-tools; do
+      if apt-cache show "$pkg" >/dev/null 2>&1; then apt-get install -y -qq "$pkg" >/dev/null || true; fi
+    done
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y ca-certificates curl unzip iptables >/dev/null
+    dnf install -y amneziawg-tools amneziawg-go wireguard-tools >/dev/null || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y ca-certificates curl unzip iptables >/dev/null
+    yum install -y amneziawg-tools amneziawg-go wireguard-tools >/dev/null || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache ca-certificates curl unzip iptables >/dev/null
+    apk add --no-cache amneziawg-tools amneziawg-go wireguard-tools >/dev/null || true
+  fi
+}
+
+add_amnyam_amnezia_apt_repo() {
+  [ -f /etc/os-release ] || return 0
+  . /etc/os-release
+  local suite="${VERSION_CODENAME:-}"
+  if [ "${ID:-}" = "debian" ]; then
+    case "$suite" in
+      bookworm) suite="focal" ;;
+      trixie) suite="noble" ;;
+      *) suite="noble" ;;
+    esac
+  else
+    case "$suite" in
+      focal|jammy|noble) ;;
+      *) suite="noble" ;;
+    esac
+  fi
+  local keyring="/etc/apt/keyrings/amnezia-ppa.gpg"
+  local list="/etc/apt/sources.list.d/amnezia-ppa.list"
+  local fingerprint="75C9DD72C799870E310542E24166F2C257290828"
+  mkdir -p /etc/apt/keyrings
+  if [ ! -s "$keyring" ]; then
+    local tmpkey
+    tmpkey=$(mktemp /tmp/amnyam-amnezia-ppa.XXXXXX.gpg)
+    curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${fingerprint}" \
+      | gpg --batch --no-tty --yes --dearmor -o "$tmpkey"
+    local got
+    got=$(gpg --batch --no-tty --show-keys --with-colons "$tmpkey" 2>/dev/null | awk -F: '/^fpr:/{print $10; exit}')
+    [ "$got" = "$fingerprint" ] || { rm -f "$tmpkey"; return 1; }
+    chmod 644 "$tmpkey"
+    mv -f "$tmpkey" "$keyring"
+  fi
+  echo "deb [signed-by=${keyring}] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu ${suite} main" > "$list"
+  chmod 644 "$list"
+  apt-get update -qq || true
+}
+
+install_amnyam_awg_tools_release() {
+  if command -v awg >/dev/null 2>&1 && command -v awg-quick >/dev/null 2>&1; then return 0; fi
+  command -v curl >/dev/null 2>&1 || { echo "Required command not found: curl" >&2; return 1; }
+  command -v unzip >/dev/null 2>&1 || { echo "Required command not found: unzip" >&2; return 1; }
+  local asset="ubuntu-22.04-amneziawg-tools.zip"
+  if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    if [ "${ID:-}" = "alpine" ]; then asset="alpine-3.19-amneziawg-tools.zip"; fi
+  fi
+  local tag="v1.0.20260618-2"
+  local url="https://github.com/amnezia-vpn/amneziawg-tools/releases/download/${tag}/${asset}"
+  local tmp
+  tmp=$(mktemp -d /tmp/amnyam-awg-tools.XXXXXX)
+  curl -fsSL "$url" -o "$tmp/tools.zip"
+  unzip -oq "$tmp/tools.zip" -d "$tmp"
+  install -m 0755 "$tmp"/*/awg /usr/local/bin/awg
+  install -m 0755 "$tmp"/*/awg-quick /usr/local/bin/awg-quick
+  rm -rf "$tmp"
+}
+
+echo "Ensuring host AmneziaWG packages/tools..."
+install_amnyam_awg_base_packages
+install_amnyam_awg_tools_release
+command -v awg >/dev/null 2>&1 || { echo "Required command not found after install: awg" >&2; exit 1; }
+command -v awg-quick >/dev/null 2>&1 || { echo "Required command not found after install: awg-quick" >&2; exit 1; }
+AMNYAM_AWG_USE_GO=0
+if command -v amneziawg-go >/dev/null 2>&1; then
+  AMNYAM_AWG_USE_GO=1
+else
+  echo "amneziawg-go not found; awg-quick will use the host AmneziaWG kernel module if available."
+fi
+amnyam_awg_quick() {
+  if [ "$AMNYAM_AWG_USE_GO" -eq 1 ]; then
+    WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go awg-quick "$@"
+  else
+    awg-quick "$@"
+  fi
+}
+
+SH;
     }
 
     private function packageBootstrap(array $commands): string
