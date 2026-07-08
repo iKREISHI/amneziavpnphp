@@ -95,17 +95,22 @@ echo \"Route table " . $this->shText($routeLabel) . ":\"; ip route show table " 
         $ruleTablePattern = $this->ruleTablePattern($p);
         $configB64 = base64_encode((string) $upstream['config_content']);
         $iface = $p['upstream_interface'];
+        $wireguardConfigPath = '/etc/wireguard/' . $iface . '.conf';
+        $toolConfigPath = $tool === 'awg-quick' ? '/etc/amnezia/amneziawg/' . $iface . '.conf' : $wireguardConfigPath;
+        $awgConfigCopy = $tool === 'awg-quick'
+            ? "mkdir -p /etc/amnezia/amneziawg\ncp " . $this->q($wireguardConfigPath) . " " . $this->q($toolConfigPath) . "\nchmod 600 " . $this->q($toolConfigPath) . "\n"
+            : '';
         $awgBootstrap = $tool === 'awg-quick' ? $this->amneziawgHostBootstrap() : '';
         $toolCommand = $tool === 'awg-quick' ? 'amnyam_awg_quick' : $this->q($tool);
         return $this->scriptHeader('set -euo pipefail') . $this->packageBootstrap($commands) . $this->requiredCommands($commands) . "
 " . $awgBootstrap . "mkdir -p /etc/wireguard
 umask 077
-base64 -d > /etc/wireguard/" . $this->q($iface . '.conf') . " <<'AMNYAM_UPSTREAM_CONF'
+base64 -d > " . $this->q($wireguardConfigPath) . " <<'AMNYAM_UPSTREAM_CONF'
 " . $configB64 . "
 AMNYAM_UPSTREAM_CONF
-chmod 600 /etc/wireguard/" . $this->q($iface . '.conf') . "
-" . $toolCommand . " down " . $this->q($iface) . " 2>/dev/null || true
-" . $toolCommand . " up " . $this->q($iface) . "
+chmod 600 " . $this->q($wireguardConfigPath) . "
+" . $awgConfigCopy . $toolCommand . " down " . $this->q($toolConfigPath) . " 2>/dev/null || true
+" . $toolCommand . " up " . $this->q($toolConfigPath) . "
 ip link show " . $this->q($iface) . " >/dev/null
 ip rule show | grep -Eq \"fwmark " . $this->grepText($p['upstream_fwmark']) . ".*" . $ruleTablePattern . "\" || ip rule add fwmark " . $this->q($p['upstream_fwmark']) . " table " . $this->q($routeTable) . " priority " . (int) $p['upstream_rule_priority'] . "
 ip route replace default dev " . $this->q($iface) . " table " . $this->q($routeTable) . "
@@ -288,11 +293,12 @@ wg show " . $this->q($p['upstream_interface']) . " 2>/dev/null || awg show " . $
 install_amnyam_awg_base_packages() {
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
+    export NEEDRESTART_MODE=a
     apt-get update -qq
-    apt-get install -y -qq ca-certificates curl unzip gpg iptables >/dev/null
+    apt-get install -y -qq ca-certificates curl unzip gpg iptables >/dev/null 2>&1
     add_amnyam_amnezia_apt_repo || true
     for pkg in amneziawg-tools amneziawg-go amneziawg-dkms wireguard-tools; do
-      if apt-cache show "$pkg" >/dev/null 2>&1; then apt-get install -y -qq "$pkg" >/dev/null || true; fi
+      if apt-cache show "$pkg" >/dev/null 2>&1; then apt-get install -y -qq "$pkg" >/dev/null 2>&1 || true; fi
     done
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y ca-certificates curl unzip iptables >/dev/null
